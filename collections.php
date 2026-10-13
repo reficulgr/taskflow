@@ -263,6 +263,9 @@ function render_tree($parentId, $byParent, $depth = 0) {
     .collection-row.active-row > div { background: rgba(201, 164, 74, 0.12); box-shadow: inset 0 0 0 1px rgba(201, 164, 74, 0.45); }
     .drop-zone { border: 2px dashed #575753; transition: all 0.2s; }
     .drop-zone.drag-over { border-color: #c9a44a; background: rgba(201, 164, 74, 0.1); }
+    ::-webkit-scrollbar { width: 8px; }
+    ::-webkit-scrollbar-track { background: #1c1c1b; }
+    ::-webkit-scrollbar-thumb { background: #575753; border-radius: 4px; }
   </style>
 </head>
 <body class="bg-slate-900 text-slate-100 font-sans min-h-screen">
@@ -418,7 +421,7 @@ function render_tree($parentId, $byParent, $depth = 0) {
         <?php if (empty($taskAgg)): ?>
           <p class="text-sm text-slate-500">Nothing logged in <?= htmlspecialchars($rangeLabel) ?>.</p>
         <?php else: ?>
-          <div class="divide-y divide-slate-700/60">
+          <div class="divide-y divide-slate-700/60 max-h-96 overflow-y-auto pr-1">
             <?php foreach ($taskAgg as $t):
               $cls = CAT_COLORS[$t['category']] ?? 'bg-gray-500';
               $txt = CAT_TEXT[$t['category']] ?? 'text-gray-400';

@@ -840,7 +840,7 @@ function render_header(string $current, array $user): void {
     <nav class="container mx-auto px-4 sm:px-6 lg:px-8">
       <div class="flex items-center justify-between h-16">
         <div class="flex items-center gap-3">
-          <a href="index.php" class="text-white font-bold text-xl font-condensed">TaskFlow</a>
+          <a href="index.php" class="text-white font-bold text-xl font-condensed"><span class="text-white">•</span> TaskFlow</a>
           <span class="text-xs text-slate-400 font-mono">' . htmlspecialchars($user['username']) . '</span>
         </div>
         <div class="flex items-center gap-2 sm:gap-4">

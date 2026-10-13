@@ -1,0 +1,45 @@
+name: Deploy to live site
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install lftp
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq lftp
+
+      - name: Deploy to GreenGeeks via FTPS
+        env:
+          FTP_HOST: ${{ secrets.FTP_HOST }}
+          FTP_PORT: "21"
+          FTP_USER: ${{ secrets.FTP_USER }}
+          FTP_PASS: ${{ secrets.FTP_PASS }}
+          FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
+        run: |
+          lftp -u "$FTP_USER","$FTP_PASS" -e "
+            set ftp:ssl-allow yes;
+            set ftp:ssl-force yes;
+            set ftp:ssl-protect-data yes;
+            set ssl:verify-certificate no;
+            set net:max-retries 3;
+            set net:timeout 60;
+            mirror -R --no-perms --verbose \
+              --exclude-glob .git* \
+              --exclude-glob .github/ \
+              --exclude-glob mcp-server/ \
+              --exclude-glob *.sql \
+              --exclude-glob config.example.php \
+              . \"$FTP_REMOTE_DIR\";
+            bye
+          " ftp://$FTP_HOST:$FTP_PORT

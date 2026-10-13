@@ -15,15 +15,151 @@ foreach ($tasks as $t) { if ($t['collectionId'] !== null) $taskCounts[$t['collec
 $completedCounts = [];
 foreach ($completed as $c) { if ($c['collectionId'] !== null) $completedCounts[$c['collectionId']] = ($completedCounts[$c['collectionId']] ?? 0) + 1; }
 
+// ====== Selected collection view ======
+$viewId = isset($_GET['id']) ? (int)$_GET['id'] : 0;
+$viewCol = null;
+if ($viewId) {
+  $viewCol = get_collection($user['id'], $viewId);
+  if (!$viewCol) $viewId = 0;
+}
+$subtreeIds = $viewCol ? get_descendant_collection_ids($user['id'], $viewCol['id']) : [];
+
+// ====== Time filtering (same semantics as report.php) ======
+$range = trim($_GET['range'] ?? 'all');
+if (!in_array($range, ['all', 'today', '7d', '30d', 'month', 'year', 'custom'], true)) $range = 'all';
+$hbFrom = trim($_GET['from'] ?? '');
+$hbTo = trim($_GET['to'] ?? '');
+if ($range === 'custom') {
+  if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $hbFrom)) $hbFrom = '';
+  if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $hbTo)) $hbTo = '';
+  if ($hbFrom === '' && $hbTo === '') $range = 'all';
+} else {
+  $hbFrom = ''; $hbTo = '';
+}
+$rangeFrom = null; $rangeTo = null;
+switch ($range) {
+  case 'today': $rangeFrom = date('Y-m-d'); break;
+  case '7d':    $rangeFrom = date('Y-m-d', strtotime('-6 days')); break;
+  case '30d':   $rangeFrom = date('Y-m-d', strtotime('-29 days')); break;
+  case 'month': $rangeFrom = date('Y-m-01'); break;
+  case 'year':  $rangeFrom = date('Y-01-01'); break;
+  case 'custom':
+    $rangeFrom = $hbFrom !== '' ? $hbFrom : null;
+    $rangeTo = $hbTo !== '' ? $hbTo : null;
+    break;
+}
+$rangeLabel = 'All time';
+if ($range === 'today') $rangeLabel = 'Today';
+elseif ($range === '7d') $rangeLabel = 'Last 7 days';
+elseif ($range === '30d') $rangeLabel = 'Last 30 days';
+elseif ($range === 'month') $rangeLabel = 'This month';
+elseif ($range === 'year') $rangeLabel = 'This year';
+elseif ($range === 'custom') {
+  $parts = [];
+  if ($rangeFrom) $parts[] = 'from ' . date('M j, Y', strtotime($rangeFrom));
+  if ($rangeTo) $parts[] = 'to ' . date('M j, Y', strtotime($rangeTo));
+  $rangeLabel = ucfirst(implode(' ', $parts));
+}
+
+// Committed time: actual elapsed minutes preferred (mirrors budget accounting).
+$minutesOf = function (array $c): int {
+  if (!empty($c['startAt']) && !empty($c['endAt'])) {
+    $diff = (int)round((strtotime($c['endAt']) - strtotime($c['startAt'])) / 60);
+    if ($diff > 0) return $diff;
+  }
+  return (int)$c['duration'];
+};
+
+$today = date('Y-m-d');
+$subtreeCompleted = $viewCol ? array_values(array_filter($completed, fn($c) => $c['collectionId'] !== null && in_array($c['collectionId'], $subtreeIds, true))) : [];
+$viewCompleted = array_values(array_filter($subtreeCompleted, function ($c) use ($rangeFrom, $rangeTo) {
+  $d = date('Y-m-d', strtotime($c['completedAt']));
+  if ($rangeFrom !== null && $d < $rangeFrom) return false;
+  if ($rangeTo !== null && $d > $rangeTo) return false;
+  return true;
+}));
+
+// ====== Heartbeat window + buckets (day buckets; weekly for long windows) ======
+$winStart = $today; $winEnd = $today;
+if ($viewCol) {
+  switch ($range) {
+    case 'today': break;
+    case '7d':  $winStart = date('Y-m-d', strtotime('-6 days')); break;
+    case '30d': $winStart = date('Y-m-d', strtotime('-29 days')); break;
+    case 'month': $winStart = date('Y-m-01'); break;
+    case 'year': $winStart = date('Y-01-01'); break;
+    case 'custom':
+      if ($rangeFrom !== null) $winStart = $rangeFrom;
+      if ($rangeTo !== null) $winEnd = $rangeTo;
+      if ($winEnd > $today) $winEnd = $today;
+      if ($winStart > $winEnd) $winStart = $winEnd;
+      break;
+    case 'all':
+      foreach ($subtreeCompleted as $c) {
+        $d = date('Y-m-d', strtotime($c['completedAt']));
+        if ($d < $winStart) $winStart = $d;
+      }
+      break;
+  }
+}
+$spanDays = $viewCol ? (intdiv(strtotime($winEnd) - strtotime($winStart), 86400) + 1) : 0;
+$granularity = $spanDays > 120 ? 'week' : 'day';
+
+function week_start_of(string $d): string {
+  $t = strtotime($d);
+  return date('Y-m-d', $t - ((int)date('w', $t)) * 86400);
+}
+function bucket_key_of(string $d, string $gran): string {
+  return $gran === 'week' ? week_start_of($d) : $d;
+}
+
+$buckets = [];
+if ($viewCol && $spanDays > 0) {
+  if ($granularity === 'week') {
+    $cur = week_start_of($winStart);
+    while ($cur <= $winEnd) {
+      $buckets[$cur] = ['start' => $cur, 'total' => 0, 'cats' => []];
+      $cur = date('Y-m-d', strtotime($cur . ' +7 days'));
+    }
+  } else {
+    $cur = $winStart;
+    while ($cur <= $winEnd) {
+      $buckets[$cur] = ['start' => $cur, 'total' => 0, 'cats' => []];
+      $cur = date('Y-m-d', strtotime($cur . ' +1 day'));
+    }
+  }
+  foreach ($viewCompleted as $c) {
+    $k = bucket_key_of(date('Y-m-d', strtotime($c['completedAt'])), $granularity);
+    if (!isset($buckets[$k])) continue;
+    $m = $minutesOf($c);
+    $buckets[$k]['total'] += $m;
+    $buckets[$k]['cats'][$c['category']] = ($buckets[$k]['cats'][$c['category']] ?? 0) + $m;
+  }
+}
+$bucketList = array_values($buckets);
+$maxBucket = 0;
+foreach ($bucketList as $b) { if ($b['total'] > $maxBucket) $maxBucket = $b['total']; }
+
+$statTotal = 0; $activeBuckets = 0;
+foreach ($bucketList as $b) { $statTotal += $b['total']; if ($b['total'] > 0) $activeBuckets++; }
+$statAvg = $activeBuckets > 0 ? (int)round($statTotal / $activeBuckets) : 0;
+$lastDate = null;
+foreach ($viewCompleted as $c) {
+  $d = date('Y-m-d', strtotime($c['completedAt']));
+  if ($lastDate === null || $d > $lastDate) $lastDate = $d;
+}
+$activeUnit = $granularity === 'week' ? 'weeks' : 'days';
+
 $byParent = [];
 foreach ($collections as $c) { $byParent[$c['parentId']][] = $c; }
 function render_tree($parentId, $byParent, $depth = 0) {
+  global $taskCounts, $completedCounts, $viewId;
   $children = $byParent[$parentId] ?? [];
   foreach ($children as $c):
     $typeColor = $c['type'] === 'Initiative' ? 'text-sky-400' : 'text-violet-400';
     $typeBg = $c['type'] === 'Initiative' ? 'bg-sky-600' : 'bg-violet-600';
   ?>
-    <div class="collection-row group" draggable="true" data-id="<?= $c['id'] ?>">
+    <div class="collection-row group<?= $c['id'] === $viewId ? ' active-row' : '' ?>" draggable="true" data-id="<?= $c['id'] ?>">
       <div class="flex items-center justify-between p-3 rounded-md hover:bg-slate-700/50 transition-colors" style="margin-left: <?= $depth * 24 ?>px">
         <div class="flex items-center gap-3 min-w-0">
           <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5 text-slate-500 cursor-grab flex-shrink-0 drag-handle">
@@ -76,8 +212,15 @@ function render_tree($parentId, $byParent, $depth = 0) {
   <style>
     .collection-row.dragging { opacity: 0.4; }
     .collection-row.drag-over > div { background: rgba(201, 164, 74, 0.2); outline: 2px dashed #c9a44a; outline-offset: -2px; }
+    .collection-row { cursor: pointer; }
+    .collection-row.active-row > div { background: rgba(201, 164, 74, 0.12); box-shadow: inset 0 0 0 1px rgba(201, 164, 74, 0.45); }
     .drop-zone { border: 2px dashed #575753; transition: all 0.2s; }
     .drop-zone.drag-over { border-color: #c9a44a; background: rgba(201, 164, 74, 0.1); }
+    .hb { display: flex; align-items: flex-end; gap: 2px; height: 8rem; border-bottom: 1px solid #3a3a38; }
+    .hb-bar { flex: 1 1 0; min-width: 3px; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; }
+    .hb-bar > div { transition: height 0.35s cubic-bezier(.22,1,.36,1); }
+    .hb-flat { width: 100%; height: 2px; background: #3a3a38; }
+    @media (min-width: 768px) { .hb { height: 10rem; } }
   </style>
 </head>
 <body class="bg-slate-900 text-slate-100 font-sans min-h-screen">
@@ -154,12 +297,99 @@ function render_tree($parentId, $byParent, $depth = 0) {
   </aside>
 
   <section class="flex-1 min-w-0 p-4 md:p-6">
-    <h1 class="text-3xl font-bold text-slate-100">Collections</h1>
+    <?php if (!$viewCol): ?>
+      <h1 class="text-3xl font-bold text-slate-100">Collections</h1>
+      <div class="mt-8 max-w-md p-10 text-center bg-slate-800 rounded-lg border border-dashed border-slate-700">
+        <p class="text-slate-400 font-semibold">Pick a collection from the sidebar</p>
+        <p class="text-xs text-slate-500 mt-2">Click any Initiative or Project to open its heartbeat — the daily pulse of committed time.</p>
+      </div>
+    <?php else: ?>
+      <div class="mb-4">
+        <div class="flex items-center gap-2 mb-1">
+          <span class="<?= $viewCol['type'] === 'Initiative' ? 'bg-sky-600' : 'bg-violet-600' ?> text-white text-xs font-bold px-2 py-0.5 rounded-full flex-shrink-0"><?= $viewCol['type'] ?></span>
+          <h1 class="text-3xl font-bold text-slate-100 truncate"><?= htmlspecialchars($viewCol['name']) ?></h1>
+        </div>
+        <?php if ($viewCol['description']): ?><p class="text-sm text-slate-400 mt-1"><?= htmlspecialchars($viewCol['description']) ?></p><?php endif; ?>
+      </div>
+
+      <div class="bg-slate-800 rounded-lg border border-slate-700 p-4 mb-4">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <p class="text-sm text-slate-300">Showing: <span class="text-accent-400 font-semibold"><?= htmlspecialchars($rangeLabel) ?></span></p>
+          <div class="flex flex-wrap gap-1.5">
+            <?php
+              $presets = ['all' => 'All', 'today' => 'Today', '7d' => '7d', '30d' => '30d', 'month' => 'Month', 'year' => 'Year'];
+              foreach ($presets as $key => $label):
+                $qs = $key === 'all' ? ['id' => $viewCol['id']] : ['id' => $viewCol['id'], 'range' => $key];
+                $active = $range === $key ? 'bg-accent-500/90 text-slate-950' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'; ?>
+                <a href="collections.php?<?= http_build_query($qs) ?>" class="px-2.5 py-1 rounded-full text-xs font-medium transition-colors <?= $active ?>"><?= $label ?></a>
+            <?php endforeach; ?>
+          </div>
+        </div>
+        <form method="GET" action="collections.php" class="flex flex-wrap items-end gap-2 border-t border-slate-700 pt-3 mt-3">
+          <input type="hidden" name="id" value="<?= $viewCol['id'] ?>">
+          <input type="hidden" name="range" value="custom">
+          <input type="date" name="from" value="<?= htmlspecialchars($hbFrom) ?>" class="p-2 bg-slate-700 border border-slate-600 rounded-md text-sm text-slate-200 focus:ring-2 focus:ring-accent-400 focus:outline-none">
+          <input type="date" name="to" value="<?= htmlspecialchars($hbTo) ?>" class="p-2 bg-slate-700 border border-slate-600 rounded-md text-sm text-slate-200 focus:ring-2 focus:ring-accent-400 focus:outline-none">
+          <button type="submit" class="bg-accent-400 hover:bg-accent-300 text-slate-950 text-sm font-bold px-4 py-2 rounded transition-colors">Apply</button>
+          <?php if ($range !== 'all'): ?><a href="collections.php?id=<?= $viewCol['id'] ?>" class="text-xs text-slate-400 hover:text-white py-2 px-2">Clear filter</a><?php endif; ?>
+        </form>
+      </div>
+
+      <div class="bg-slate-800 rounded-lg border border-slate-700 p-4">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-lg font-bold text-slate-200">Heartbeat</h2>
+          <span class="text-xs text-slate-500"><?= $granularity === 'week' ? 'weekly buckets' : 'per day' ?> · <?= htmlspecialchars($rangeLabel) ?></span>
+        </div>
+        <div class="hb">
+          <?php foreach ($bucketList as $b):
+            $h = $maxBucket > 0 && $b['total'] > 0 ? max(6, (int)round($b['total'] / $maxBucket * 100)) : 0;
+            $dom = null; $domM = 0;
+            foreach ($b['cats'] as $cat => $m) { if ($m > $domM) { $dom = $cat; $domM = $m; } }
+            if ($granularity === 'week') {
+              $e = date('Y-m-d', min(strtotime($b['start']) + 6 * 86400, strtotime($winEnd)));
+              $title = date('M j', strtotime($b['start'])) . ' – ' . date('M j', strtotime($e)) . ' — ' . ($b['total'] > 0 ? format_minutes($b['total']) . ($dom ? ' · ' . $dom : '') : 'no commits');
+            } else {
+              $title = date('M j, Y', strtotime($b['start'])) . ' — ' . ($b['total'] > 0 ? format_minutes($b['total']) . ($dom ? ' · ' . $dom : '') : 'no commits');
+            } ?>
+            <div class="hb-bar" title="<?= htmlspecialchars($title) ?>">
+              <?php if ($b['total'] > 0): ?>
+                <div class="w-full rounded-t-sm <?= CAT_COLORS[$dom] ?? 'bg-accent-500' ?>" style="height: <?= $h ?>%"></div>
+              <?php else: ?>
+                <div class="hb-flat"></div>
+              <?php endif; ?>
+            </div>
+          <?php endforeach; ?>
+        </div>
+        <?php if ($maxBucket === 0): ?>
+          <p class="text-xs text-slate-500 text-center mt-3">Flatline — nothing logged in <?= htmlspecialchars($rangeLabel) ?>.</p>
+        <?php endif; ?>
+      </div>
+
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
+        <div class="bg-slate-800 rounded-lg border border-slate-700 p-3">
+          <p class="text-xs text-slate-500">Total logged</p>
+          <p class="text-xl font-bold text-slate-100 font-mono"><?= format_minutes($statTotal) ?></p>
+        </div>
+        <div class="bg-slate-800 rounded-lg border border-slate-700 p-3">
+          <p class="text-xs text-slate-500">Active <?= ucfirst($activeUnit) ?></p>
+          <p class="text-xl font-bold text-slate-100 font-mono"><?= $activeBuckets ?></p>
+        </div>
+        <div class="bg-slate-800 rounded-lg border border-slate-700 p-3">
+          <p class="text-xs text-slate-500">Avg per active</p>
+          <p class="text-xl font-bold text-slate-100 font-mono"><?= format_minutes($statAvg) ?></p>
+        </div>
+        <div class="bg-slate-800 rounded-lg border border-slate-700 p-3">
+          <p class="text-xs text-slate-500">Last activity</p>
+          <p class="text-xl font-bold text-slate-100 font-mono"><?= $lastDate ? date('M j, Y', strtotime($lastDate)) : '—' ?></p>
+        </div>
+      </div>
+    <?php endif; ?>
   </section>
 </main>
 <script>
 const rows = document.querySelectorAll('.collection-row');
 let dragId = null;
+let justDragged = 0;
 
 rows.forEach(row => {
   row.addEventListener('dragstart', (e) => {
@@ -171,6 +401,7 @@ rows.forEach(row => {
     row.classList.remove('dragging');
     document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
     dragId = null;
+    justDragged = Date.now();
   });
   row.addEventListener('dragover', (e) => {
     e.preventDefault();
@@ -187,6 +418,14 @@ rows.forEach(row => {
     if (dragId && dragId !== row.dataset.id) {
       reparent(dragId, row.dataset.id);
     }
+  });
+});
+
+rows.forEach(row => {
+  row.addEventListener('click', (e) => {
+    if (e.target.closest('a, button, input, textarea, select, label')) return;
+    if (Date.now() - justDragged < 400) return;
+    window.location.href = 'collections.php?id=' + row.dataset.id;
   });
 });
 

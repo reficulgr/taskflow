@@ -82,30 +82,10 @@ function render_tree($parentId, $byParent, $depth = 0) {
 </head>
 <body class="bg-slate-900 text-slate-100 font-sans min-h-screen">
 <?php render_header('collections', $user); ?>
-<main class="p-4 md:p-6 max-w-3xl mx-auto">
-  <div class="flex justify-between items-center mb-6">
-    <h1 class="text-3xl font-bold text-slate-100">Collections</h1>
-  </div>
+<main class="flex flex-col md:flex-row md:items-start">
+  <aside class="w-full md:w-96 flex-shrink-0 md:sticky md:top-16 md:flex md:flex-col md:h-[calc(100vh-4rem)] md:border-r md:border-slate-700">
 
-  <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-    <div>
-      <h2 class="text-xl font-semibold text-slate-300 mb-4">Tree</h2>
-      <?php if (empty($collections)): ?>
-        <div class="text-center p-8 bg-slate-800 rounded-lg border border-slate-700">
-          <p class="text-slate-400">No collections yet. Create an initiative to get started.</p>
-        </div>
-      <?php else: ?>
-        <div id="tree" class="space-y-1">
-          <?php render_tree(null, $byParent); ?>
-        </div>
-        <div id="root-drop" class="drop-zone mt-3 p-3 text-center text-sm text-slate-500 rounded-md" data-id="">
-          Drop here to move to top level
-        </div>
-      <?php endif; ?>
-      <p class="text-xs text-slate-500 mt-3">Drag any row onto another to re-parent it. Drop on the zone above to make it top-level.</p>
-    </div>
-
-    <div>
+    <div class="p-4 md:p-6 pb-4 flex-shrink-0">
       <h2 class="text-xl font-semibold text-slate-300 mb-4"><?= $editCol ? 'Edit' : 'Add New' ?></h2>
       <form method="POST" action="action.php" class="space-y-4 bg-slate-800 p-4 rounded-lg border border-slate-700">
         <input type="hidden" name="action" value="save_collection">
@@ -153,7 +133,29 @@ function render_tree($parentId, $byParent, $depth = 0) {
         </div>
       </form>
     </div>
-  </div>
+
+    <div class="p-4 md:p-6 pt-4 md:flex-1 md:min-h-0 md:overflow-y-auto">
+      <h2 class="text-xl font-semibold text-slate-300 mb-4">Tree</h2>
+      <?php if (empty($collections)): ?>
+        <div class="text-center p-8 bg-slate-800 rounded-lg border border-slate-700">
+          <p class="text-slate-400">No collections yet. Create an initiative to get started.</p>
+        </div>
+      <?php else: ?>
+        <div id="tree" class="space-y-1">
+          <?php render_tree(null, $byParent); ?>
+        </div>
+        <div id="root-drop" class="drop-zone mt-3 p-3 text-center text-sm text-slate-500 rounded-md" data-id="">
+          Drop here to move to top level
+        </div>
+      <?php endif; ?>
+      <p class="text-xs text-slate-500 mt-3">Drag any row onto another to re-parent it. Drop on the zone above to make it top-level.</p>
+    </div>
+
+  </aside>
+
+  <section class="flex-1 min-w-0 p-4 md:p-6">
+    <h1 class="text-3xl font-bold text-slate-100">Collections</h1>
+  </section>
 </main>
 <script>
 const rows = document.querySelectorAll('.collection-row');

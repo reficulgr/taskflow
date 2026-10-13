@@ -16,21 +16,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install lftp
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq lftp
-
-      - name: Diagnose
-        env:
-          FTP_HOST: ${{ secrets.FTP_HOST }}
-          FTP_PORT: "21"
-          FTP_USER: ${{ secrets.FTP_USER }}
-          FTP_PASS: ${{ secrets.FTP_PASS }}
-        run: |
-          echo "user_len=${#FTP_USER} pass_len=${#FTP_PASS} host_len=${#FTP_HOST}"
-          echo "$FTP_HOST" | od -c | head -2
-          getent hosts "$FTP_HOST" || echo "DNS FAILED"
-          curl -sSv --connect-timeout 10 --max-time 40 --ssl "ftp://$FTP_HOST:$FTP_PORT/" -u "$FTP_USER:$FTP_PASS" -o /dev/null 2>&1 | grep -E '\* (Trying|Trying|Connected|SSL|TLS)|220|331|230|530|421|AUTH|curl: \(' | tail -20
-
       - name: Deploy to GreenGeeks via FTPS
         env:
           FTP_HOST: ${{ secrets.FTP_HOST }}
@@ -39,19 +24,24 @@ jobs:
           FTP_PASS: ${{ secrets.FTP_PASS }}
           FTP_REMOTE_DIR: ${{ secrets.FTP_REMOTE_DIR }}
         run: |
-          lftp -d -u "$FTP_USER","$FTP_PASS" -e "
-            set ftp:ssl-allow yes;
-            set ftp:ssl-force yes;
-            set ftp:ssl-protect-data yes;
-            set ssl:verify-certificate no;
-            set net:max-retries 3;
-            set net:timeout 60;
-            mirror -R --no-perms --verbose \
-              --exclude-glob .git* \
-              --exclude-glob .github/ \
-              --exclude-glob mcp-server/ \
-              --exclude-glob *.sql \
-              --exclude-glob config.example.php \
-              . \"$FTP_REMOTE_DIR\";
-            bye
-          " ftp://$FTP_HOST:$FTP_PORT
+          set -euo pipefail
+          BASE="ftp://$FTP_HOST:$FTP_PORT"
+          cd "$GITHUB_WORKSPACE"
+          files=$(find . -type f \
+            ! -path './.git/*' \
+            ! -path './.github/*' \
+            ! -path './mcp-server/*' \
+            ! -path './sessions/*' \
+            ! -name '*.sql' \
+            ! -name 'config.example.php' \
+            ! -name 'config.php' \
+            ! -name '.gitignore' \
+            ! -name '.virgo-ftp.json' \
+            ! -name 'README.md')
+          echo "$files" | sed 's|^\./||' | while IFS= read -r f; do
+            curl -sS --ssl-reqd --connect-timeout 20 --retry 3 --ftp-create-dirs \
+              -u "$FTP_USER:$FTP_PASS" -T "$f" "$BASE$FTP_REMOTE_DIR/$f" \
+              || { echo "FAILED: $f"; exit 1; }
+            echo "uploaded: $f"
+          done
+          echo "Deploy complete."

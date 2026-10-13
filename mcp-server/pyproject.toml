@@ -1,0 +1,15 @@
+[project]
+name = "taskflow-mcp"
+version = "0.1.0"
+description = "MCP server exposing the TaskFlow HTTP API as tools for opencode/other MCP clients."
+requires-python = ">=3.11"
+dependencies = ["mcp>=2.0.0"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+only-include = ["server.py"]
+sources = ["."]

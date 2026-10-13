@@ -1,0 +1,16 @@
+# Local config with real credentials — never commit
+config.php
+
+# Deployment config (contains FTP password)
+.virgo-ftp.json
+
+# PHP session files (runtime data)
+sessions/
+
+# Python (MCP server)
+mcp-server/.venv/
+__pycache__/
+*.pyc
+
+# Editor
+.vscode/

@@ -150,6 +150,53 @@ foreach ($viewCompleted as $c) {
 }
 $activeUnit = $granularity === 'week' ? 'weeks' : 'days';
 
+// ====== Line-graph scale, x labels, per-task pebbles ======
+$yMax = $maxBucket;
+$yTicks = []; $yTop = 0;
+if ($yMax > 0) {
+  $niceSteps = [15, 30, 45, 60, 90, 120, 180, 240, 300, 360, 480, 600, 720, 900, 1200, 1440];
+  $step = 0;
+  foreach ($niceSteps as $opt) { if ($opt >= $yMax / 4) { $step = $opt; break; } }
+  if ($step === 0) $step = 1440 * (int)ceil($yMax / 4 / 1440);
+  $yTop = (int)ceil($yMax / $step) * $step;
+  for ($v = $step; $v <= $yTop; $v += $step) $yTicks[] = $v;
+}
+$svgPts = ''; $svgArea = '';
+if ($bucketList) {
+  $n = count($bucketList);
+  $pts = [];
+  if ($n === 1) {
+    $y = $yTop > 0 ? 400 - $bucketList[0]['total'] / $yTop * 400 : 400;
+    $pts = ['0,' . round($y, 2), '1000,' . round($y, 2)];
+  } else {
+    foreach ($bucketList as $i => $b) {
+      $x = $i / ($n - 1) * 1000;
+      $y = $yTop > 0 ? 400 - $b['total'] / $yTop * 400 : 400;
+      $pts[] = round($x, 2) . ',' . round($y, 2);
+    }
+  }
+  $svgPts = implode(' ', $pts);
+  $svgArea = '0,400 ' . $svgPts . ' 1000,400';
+}
+$xLabels = [];
+if ($bucketList) {
+  $n = count($bucketList);
+  for ($k = 0; $k < 5; $k++) {
+    $i = (int)round($k * ($n - 1) / 4);
+    if (!isset($xLabels[$i])) $xLabels[$i] = date('M j', strtotime($bucketList[$i]['start']));
+  }
+}
+
+// Task rollup for the pebble list
+$taskAgg = [];
+foreach ($viewCompleted as $c) {
+  $k = $c['taskId'] !== null ? 't' . $c['taskId'] : 'c' . $c['id'];
+  if (!isset($taskAgg[$k])) $taskAgg[$k] = ['name' => $c['taskName'], 'category' => $c['category'], 'minutes' => 0];
+  $taskAgg[$k]['minutes'] += $minutesOf($c);
+}
+usort($taskAgg, fn($a, $b) => $b['minutes'] <=> $a['minutes']);
+$pebbleInc = get_pebble_increment($user['id']);
+
 $byParent = [];
 foreach ($collections as $c) { $byParent[$c['parentId']][] = $c; }
 function render_tree($parentId, $byParent, $depth = 0) {
@@ -216,11 +263,6 @@ function render_tree($parentId, $byParent, $depth = 0) {
     .collection-row.active-row > div { background: rgba(201, 164, 74, 0.12); box-shadow: inset 0 0 0 1px rgba(201, 164, 74, 0.45); }
     .drop-zone { border: 2px dashed #575753; transition: all 0.2s; }
     .drop-zone.drag-over { border-color: #c9a44a; background: rgba(201, 164, 74, 0.1); }
-    .hb { display: flex; align-items: flex-end; gap: 2px; height: 8rem; border-bottom: 1px solid #3a3a38; }
-    .hb-bar { flex: 1 1 0; min-width: 3px; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; }
-    .hb-bar > div { transition: height 0.35s cubic-bezier(.22,1,.36,1); }
-    .hb-flat { width: 100%; height: 2px; background: #3a3a38; }
-    @media (min-width: 768px) { .hb { height: 10rem; } }
   </style>
 </head>
 <body class="bg-slate-900 text-slate-100 font-sans min-h-screen">
@@ -340,28 +382,67 @@ function render_tree($parentId, $byParent, $depth = 0) {
           <h2 class="text-lg font-bold text-slate-200">Heartbeat</h2>
           <span class="text-xs text-slate-500"><?= $granularity === 'week' ? 'weekly buckets' : 'per day' ?> · <?= htmlspecialchars($rangeLabel) ?></span>
         </div>
-        <div class="hb">
-          <?php foreach ($bucketList as $b):
-            $h = $maxBucket > 0 && $b['total'] > 0 ? max(6, (int)round($b['total'] / $maxBucket * 100)) : 0;
-            $dom = null; $domM = 0;
-            foreach ($b['cats'] as $cat => $m) { if ($m > $domM) { $dom = $cat; $domM = $m; } }
-            if ($granularity === 'week') {
-              $e = date('Y-m-d', min(strtotime($b['start']) + 6 * 86400, strtotime($winEnd)));
-              $title = date('M j', strtotime($b['start'])) . ' – ' . date('M j', strtotime($e)) . ' — ' . ($b['total'] > 0 ? format_minutes($b['total']) . ($dom ? ' · ' . $dom : '') : 'no commits');
-            } else {
-              $title = date('M j, Y', strtotime($b['start'])) . ' — ' . ($b['total'] > 0 ? format_minutes($b['total']) . ($dom ? ' · ' . $dom : '') : 'no commits');
-            } ?>
-            <div class="hb-bar" title="<?= htmlspecialchars($title) ?>">
-              <?php if ($b['total'] > 0): ?>
-                <div class="w-full rounded-t-sm <?= CAT_COLORS[$dom] ?? 'bg-accent-500' ?>" style="height: <?= $h ?>%"></div>
-              <?php else: ?>
-                <div class="hb-flat"></div>
-              <?php endif; ?>
+        <div class="flex">
+          <div class="relative flex-shrink-0" style="width: 4rem; height: 11rem;">
+            <?php foreach ($yTicks as $v): ?>
+              <span class="absolute right-2 text-[10px] text-slate-500 font-mono -translate-y-1/2" style="top: <?= round((1 - $v / $yTop) * 100, 2) ?>%"><?= format_minutes($v) ?></span>
+            <?php endforeach; ?>
+            <span class="absolute right-2 bottom-0 text-[10px] text-slate-500 font-mono">0</span>
+          </div>
+          <div class="flex-1 min-w-0">
+            <div class="relative" style="height: 11rem;">
+              <svg class="absolute inset-0 w-full h-full" viewBox="0 0 1000 400" preserveAspectRatio="none">
+                <?php foreach ($yTicks as $v): ?>
+                  <line x1="0" y1="<?= round(400 - $v / $yTop * 400, 2) ?>" x2="1000" y2="<?= round(400 - $v / $yTop * 400, 2) ?>" stroke="#282828" stroke-width="1" vector-effect="non-scaling-stroke" />
+                <?php endforeach; ?>
+                <line x1="0" y1="399" x2="1000" y2="399" stroke="#3a3a38" stroke-width="1" vector-effect="non-scaling-stroke" />
+                <?php if ($svgArea): ?><polygon points="<?= $svgArea ?>" fill="rgba(201, 164, 74, 0.10)" /><?php endif; ?>
+                <?php if ($svgPts): ?><polyline points="<?= $svgPts ?>" fill="none" stroke="#d9b861" stroke-width="2" vector-effect="non-scaling-stroke" /><?php endif; ?>
+              </svg>
             </div>
-          <?php endforeach; ?>
+            <div class="flex justify-between text-[10px] text-slate-500 font-mono mt-1.5">
+              <?php foreach ($xLabels as $d): ?><span><?= $d ?></span><?php endforeach; ?>
+            </div>
+          </div>
         </div>
         <?php if ($maxBucket === 0): ?>
           <p class="text-xs text-slate-500 text-center mt-3">Flatline — nothing logged in <?= htmlspecialchars($rangeLabel) ?>.</p>
+        <?php endif; ?>
+      </div>
+
+      <div class="bg-slate-800 rounded-lg border border-slate-700 p-4 mt-4">
+        <div class="flex items-center justify-between mb-2">
+          <h2 class="text-lg font-bold text-slate-200">Committed tasks</h2>
+          <span class="text-xs text-slate-500"><?= count($taskAgg) ?> tasks · <?= htmlspecialchars($rangeLabel) ?></span>
+        </div>
+        <?php if (empty($taskAgg)): ?>
+          <p class="text-sm text-slate-500">Nothing logged in <?= htmlspecialchars($rangeLabel) ?>.</p>
+        <?php else: ?>
+          <div class="divide-y divide-slate-700/60">
+            <?php foreach ($taskAgg as $t):
+              $cls = CAT_COLORS[$t['category']] ?? 'bg-gray-500';
+              $txt = CAT_TEXT[$t['category']] ?? 'text-gray-400';
+              $full = intdiv($t['minutes'], $pebbleInc);
+              $rem = $t['minutes'] % $pebbleInc; ?>
+              <div class="py-2.5">
+                <div class="flex items-center justify-between gap-2">
+                  <div class="min-w-0 flex items-center gap-2">
+                    <span class="<?= $cls ?> w-2 h-2 rounded-full flex-shrink-0"></span>
+                    <p class="text-sm font-semibold <?= $txt ?> truncate"><?= htmlspecialchars($t['name']) ?></p>
+                  </div>
+                  <span class="text-xs font-mono text-slate-400 flex-shrink-0"><?= format_minutes($t['minutes']) ?></span>
+                </div>
+                <div class="flex flex-wrap items-center gap-[3px] mt-1.5 ml-4">
+                  <?php for ($pi = 0; $pi < $full; $pi++): ?>
+                    <span class="<?= $cls ?> w-2 h-2 rounded-full" title="<?= htmlspecialchars($t['category']) ?> — <?= (int)$pebbleInc ?> min"></span>
+                  <?php endfor; ?>
+                  <?php if ($rem > 0): $pw = max(3, (int)round(8 * $rem / $pebbleInc)); ?>
+                    <span class="<?= $cls ?> rounded-full opacity-60" style="width: <?= $pw ?>px; height: 8px" title="<?= htmlspecialchars($t['category']) ?> — <?= $rem ?> min (partial)"></span>
+                  <?php endif; ?>
+                </div>
+              </div>
+            <?php endforeach; ?>
+          </div>
         <?php endif; ?>
       </div>
 

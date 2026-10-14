@@ -30,16 +30,20 @@ switch ($action) {
     redirect('index.php');
   }
 
-  case 'complete':
+  case 'complete': {
     $task = get_task($user['id'], $_POST['task_id'] ?? '');
     if ($task) {
+      $endNow = date('c');
+      $startBack = date('c', time() - $task['duration'] * 60);
       if ($task['type'] === 'Flexible') {
         $_SESSION['pending_completion'] = $task['id'];
+        $_SESSION['pending_timer'] = ['startAt' => $startBack, 'endAt' => $endNow];
         redirect('complete.php');
       }
-      complete_task($user['id'], $task);
+      complete_task($user['id'], $task, null, $startBack, $endNow);
     }
     redirect('browse.php');
+  }
 
   case 'complete_with_note': {
     $task = get_task($user['id'], $_POST['task_id'] ?? '');
